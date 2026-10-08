@@ -1,0 +1,12 @@
+/target/
+/docs/superpowers/
+/.idea/
+/.vscode/
+*.iml
+*.log
+/logs/
+/application*.yml
+/application*.properties
+/datasource.json
+/.env
+/.env.*

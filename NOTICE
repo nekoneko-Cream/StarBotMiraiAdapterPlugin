@@ -1,0 +1,12 @@
+StarBotMiraiAdapterPlugin
+Copyright (C) 2026 nekoneko-Cream
+
+Project configuration is based on StarBotExamplePlugin:
+https://github.com/Starlwr/StarBotExamplePlugin
+
+Message lifecycle integration references StarBotCore:
+https://github.com/Starlwr/StarBotCore
+
+Both upstream projects are maintained by Starlwr.
+The upstream LICENSE is preserved, including its AGPL-3.0 text and additional
+terms. See LICENSE for the complete text applicable to this adapter.

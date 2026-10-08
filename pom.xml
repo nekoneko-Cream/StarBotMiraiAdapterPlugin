@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.asus</groupId>
+    <artifactId>starbot-mirai-adapter</artifactId>
+    <version>1.0.1-beta.1</version>
+    <name>StarBotMiraiAdapterPlugin</name>
+    <description>Mirai API HTTP adapter for StarBot</description>
+    <url>https://github.com/nekoneko-Cream/StarBotMiraiAdapterPlugin</url>
+    <developers><developer><id>nekoneko-Cream</id><name>nekoneko-Cream</name></developer></developers>
+    <licenses><license><name>GNU Affero General Public License v3.0</name><url>https://www.gnu.org/licenses/agpl-3.0.html</url><distribution>repo</distribution></license></licenses>
+    <properties><java.version>17</java.version></properties>
+    <repositories><repository><id>starbot-maven-repository</id><url>https://maven.starlwr.com/</url></repository></repositories>
+    <pluginRepositories><pluginRepository><id>starbot-maven-plugin-repository</id><url>https://maven.starlwr.com/</url></pluginRepository></pluginRepositories>
+    <dependencies>
+        <dependency><groupId>com.starlwr</groupId><artifactId>starbot-core</artifactId><version>3.0.0</version></dependency>
+        <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><scope>provided</scope><optional>true</optional></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    </dependencies>
+    <build>
+        <finalName>${project.artifactId}-${project.version}</finalName>
+        <resources><resource><directory>src/main/resources</directory><excludes><exclude>application*.yml</exclude><exclude>application*.properties</exclude></excludes></resource></resources>
+        <plugins>
+            <plugin>
+                <groupId>com.starlwr</groupId><artifactId>starbot-plugin-processor</artifactId><version>1.0.0</version>
+                <executions><execution><goals><goal>plugin-info-process</goal><goal>dependency-process</goal></goals></execution></executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions><execution><id>copy-plugin-metadata</id><phase>process-resources</phase><goals><goal>copy-resources</goal></goals><configuration><outputDirectory>${project.build.outputDirectory}</outputDirectory><resources><resource><directory>${project.build.directory}</directory><includes><include>plugin.json</include><include>dependency.json</include></includes></resource></resources></configuration></execution></executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
