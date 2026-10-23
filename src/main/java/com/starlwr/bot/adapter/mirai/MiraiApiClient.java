@@ -13,7 +13,8 @@ import java.util.Map;
 public final class MiraiApiClient implements AutoCloseable {
     private final String baseUrl;
     private final RestTemplate http;
-    private String sessionKey;
+    private volatile String sessionKey;
+    private boolean closed;
     private long botQq;
     private String verifyKey;
 
@@ -23,6 +24,7 @@ public final class MiraiApiClient implements AutoCloseable {
     }
 
     public synchronized void connect(long botQq, String verifyKey) {
+        if (closed) throw new IllegalStateException("Mirai client is closed");
         if (botQq <= 0 || verifyKey == null || verifyKey.isBlank()) {
             throw new IllegalArgumentException("Mirai QQ and verifyKey must be configured");
         }
@@ -47,16 +49,14 @@ public final class MiraiApiClient implements AutoCloseable {
         return send("/sendFriendMessage", qq, messageChain);
     }
 
-    public synchronized JSONArray fetchMessages(int count) {
-        if (sessionKey == null) {
-            connect(botQq, verifyKey);
-        }
-        JSONObject result = fetch(count);
+    public JSONArray fetchMessages(int count) {
+        String key = sessionKey;
+        if (key == null) key = currentSession();
+        JSONObject result = fetch(count, key);
         Integer code = result.getInteger("code");
         if (code != null && (code == 3 || code == 4)) {
-            sessionKey = null;
-            connect(botQq, verifyKey);
-            result = fetch(count);
+            key = refreshSession(key);
+            result = fetch(count, key);
         }
         check(result, "fetchMessage");
         JSONArray events = result.getJSONArray("data");
@@ -66,9 +66,23 @@ public final class MiraiApiClient implements AutoCloseable {
         return events;
     }
 
-    private JSONObject fetch(int count) {
+    private synchronized String currentSession() {
+        if (sessionKey == null) connect(botQq, verifyKey);
+        return sessionKey;
+    }
+
+    private synchronized String refreshSession(String expired) {
+        if (closed) throw new IllegalStateException("Mirai client is closed");
+        if (sessionKey == null || expired.equals(sessionKey)) {
+            sessionKey = null;
+            connect(botQq, verifyKey);
+        }
+        return sessionKey;
+    }
+
+    private JSONObject fetch(int count, String key) {
         HttpHeaders headers = new HttpHeaders();
-        headers.set("sessionKey", sessionKey);
+        headers.set("sessionKey", key);
         JSONObject result = http.exchange(baseUrl + "/fetchMessage?count=" + Math.max(1, Math.min(100, count)),
             HttpMethod.GET, new HttpEntity<>(headers), JSONObject.class).getBody();
         if (result == null) {
@@ -79,6 +93,7 @@ public final class MiraiApiClient implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        closed = true;
         if (sessionKey != null) {
             String key = sessionKey;
             sessionKey = null;
