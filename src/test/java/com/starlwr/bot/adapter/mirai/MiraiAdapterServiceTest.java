@@ -11,6 +11,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestTemplate;
+import com.starlwr.bot.core.config.StarBotCoreProperties;
+import com.starlwr.bot.core.service.StarBotSenderService;
+import com.starlwr.bot.core.sender.StarBotMessageSender;
+import com.starlwr.bot.core.util.HttpUtil;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
+import org.springframework.boot.web.server.WebServer;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.mockito.Mockito.*;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -27,10 +38,18 @@ class MiraiAdapterServiceTest {
     private HttpServer server;
     private MiraiAdapterProperties properties;
     private MiraiAdapterService service;
+    private HttpServer bridgeServer;
+    private MockMvc mvc;
+    private StarBotSenderService nativeSenders;
+    private StarBotMessageSender coreSender;
+    private ThreadPoolTaskExecutor requestWorkers;
+    private StarBotCoreProperties coreProperties;
+    private MiraiController controller;
     private final List<Long> receivedAt = new CopyOnWriteArrayList<>();
     private final AtomicInteger sendCode = new AtomicInteger();
     private final AtomicReference<String> incoming = new AtomicReference<>("[]");
     private final List<String> bodies = new CopyOnWriteArrayList<>();
+    private final AtomicInteger backendDelay = new AtomicInteger();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -45,6 +64,7 @@ class MiraiAdapterServiceTest {
                 case "/sendGroupMessage", "/sendFriendMessage" -> {
                     receivedAt.add(System.nanoTime());
                     bodies.add(request);
+                    try { Thread.sleep(backendDelay.get()); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     yield "{\"code\":" + sendCode.get() + ",\"msg\":\"test-result\",\"messageId\":123}";
                 }
                 default -> "{\"code\":400,\"msg\":\"unexpected path\"}";
@@ -59,23 +79,112 @@ class MiraiAdapterServiceTest {
         properties = new MiraiAdapterProperties();
         properties.setBotQq(123456789L);
         properties.setDelay(0);
+        properties.setCommandMode("extended");
         MiraiApiClient client = new MiraiApiClient("http://127.0.0.1:" + server.getAddress().getPort(), new RestTemplate());
         client.connect(123456789L, "test-key");
         service = new MiraiAdapterService(properties, new MiraiMessageConverter(), client);
+        bridgeServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        coreProperties = new StarBotCoreProperties();
+        nativeSenders = new StarBotSenderService(coreProperties);
+        WebServerApplicationContext context = mock(WebServerApplicationContext.class);
+        WebServer webServer = mock(WebServer.class);
+        when(context.getWebServer()).thenReturn(webServer);
+        when(webServer.getPort()).thenReturn(bridgeServer.getAddress().getPort());
+        controller = new MiraiController(properties, service, nativeSenders, context, coreProperties);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+        controller.onApplicationReady();
+        bridgeServer.createContext("/mirai/send", exchange -> {
+            try {
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                var result = mvc.perform(post("/mirai/send").contentType("application/json")
+                    .header("Authorization", exchange.getRequestHeaders().getFirst("Authorization"))
+                    .content(body)).andReturn().getResponse();
+                byte[] response = result.getContentAsByteArray();
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(result.getStatus(), response.length);
+                exchange.getResponseBody().write(response);
+            } catch (Exception e) {
+                throw new java.io.IOException(e);
+            } finally {
+                exchange.close();
+            }
+        });
+        bridgeServer.start();
+        requestWorkers = new ThreadPoolTaskExecutor();
+        requestWorkers.initialize();
+        coreSender = new StarBotMessageSender(new HttpUtil(requestWorkers, new RestTemplate(), coreProperties), nativeSenders);
     }
 
     @AfterEach
     void tearDown() throws Exception {
+        if (coreSender != null) {
+            var executor = StarBotMessageSender.class.getDeclaredField("executor");
+            executor.setAccessible(true);
+            ((java.util.concurrent.ExecutorService) executor.get(coreSender)).shutdownNow();
+        }
+        if (requestWorkers != null) requestWorkers.shutdown();
+        if (controller != null) controller.close();
         if ((Object) service instanceof AutoCloseable closeable) {
             closeable.close();
         }
         server.stop(0);
+        if (bridgeServer != null) bridgeServer.stop(0);
     }
 
     @Test
     void ignoresMessagesForAnotherPlatform() {
         Message message = Message.create("qq-onebot", PushTargetType.GROUP, 987654321L, "hello").get(0);
-        assertFalse(service.shouldHandle(message));
+        coreSender.send(message);
+        assertTrue(bodies.isEmpty());
+    }
+
+    @Test
+    void registersNativeSenderAndRejectsUnauthenticatedHttpRequests() throws Exception {
+        var sender = nativeSenders.getSender("mirai").orElseThrow();
+        assertTrue(sender.getUrl().endsWith("/mirai/send"));
+        var response = mvc.perform(post("/mirai/send").contentType("application/json")
+            .content("{\"platform\":\"mirai\",\"type\":1,\"num\":987654321,\"content\":\"hello\"}"))
+            .andReturn().getResponse();
+        assertEquals(200, response.getStatus());
+        assertNotEquals(0, JSON.parseObject(response.getContentAsString()).getIntValue("code"));
+        assertTrue(bodies.isEmpty());
+    }
+
+    @Test
+    void rejectsInvalidPlatformAndTargetTypeBeforeCallingMirai() throws Exception {
+        String authorization = "Bearer " + nativeSenders.getSender("mirai").orElseThrow().getToken();
+        for (String payload : List.of(
+            "{\"platform\":\"other\",\"type\":1,\"num\":987654321,\"content\":\"hello\"}",
+            "{\"platform\":\"mirai\",\"type\":9,\"num\":987654321,\"content\":\"hello\"}")) {
+            var response = mvc.perform(post("/mirai/send").header("Authorization", authorization)
+                .contentType("application/json").content(payload)).andReturn().getResponse();
+            assertNotEquals(0, JSON.parseObject(response.getContentAsString()).getIntValue("code"));
+        }
+        assertTrue(bodies.isEmpty());
+    }
+
+    @Test
+    void slowMiraiRequestReturnsFailureBeforeOuterCoreTimeout() throws Exception {
+        coreProperties.getNetwork().setReadTimeout(1);
+        backendDelay.set(800);
+        CountDownLatch failure = new CountDownLatch(1);
+        Message message = message();
+        message.addOnFailureCallback(failure::countDown);
+        coreSender.send(message);
+        assertTrue(failure.await(1, TimeUnit.SECONDS), "Core must receive a nonzero result instead of losing callbacks to outer HTTP timeout");
+        assertNotNull(message.getCompleteTime());
+    }
+
+    @Test
+    void coreNextSplittingPreservesMiraiDeliveryOrder() throws Exception {
+        CountDownLatch sent = new CountDownLatch(2);
+        for (Message message : Message.create("mirai", PushTargetType.GROUP, 987654321L, "one{next}two")) {
+            message.addOnSuccessCallback(sent::countDown);
+            coreSender.send(message);
+        }
+        assertTrue(sent.await(2, TimeUnit.SECONDS));
+        assertEquals("one", JSON.parseObject(bodies.get(0)).getJSONArray("messageChain").getJSONObject(0).getString("text"));
+        assertEquals("two", JSON.parseObject(bodies.get(1)).getJSONArray("messageChain").getJSONObject(0).getString("text"));
     }
 
     @Test
@@ -101,7 +210,7 @@ class MiraiAdapterServiceTest {
             """);
         event.getJSONArray("messageChain").getJSONObject(0).put("time", java.time.Instant.now().getEpochSecond());
         incoming.set("[" + event.toJSONString() + "]");
-        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource)) {
+        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource, coreSender)) {
             receiver.poll();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (bodies.isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
@@ -135,7 +244,7 @@ class MiraiAdapterServiceTest {
         var newGroup = JSON.parseObject(oldGroup.toJSONString());
         newGroup.getJSONObject("sender").getJSONObject("group").put("id", 555555555L);
         incoming.set("[" + oldGroup.toJSONString() + "," + newGroup.toJSONString() + "]");
-        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource)) {
+        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource, coreSender)) {
             receiver.poll();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (bodies.isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
@@ -164,14 +273,14 @@ class MiraiAdapterServiceTest {
         Message message = message();
         List<String> callbacks = new CopyOnWriteArrayList<>();
         CountDownLatch success = new CountDownLatch(1);
-        message.addOnCompleteCallback(() -> callbacks.add("complete"));
+        message.addOnCompleteCallback(() -> callbacks.add("complete:" + message.getId()));
         message.addOnSuccessCallback(() -> { callbacks.add("success"); success.countDown(); });
         message.addOnFailureCallback(() -> callbacks.add("failure"));
-        service.send(message);
+        coreSender.send(message);
         assertTrue(success.await(2, TimeUnit.SECONDS), "success callback must run");
         assertEquals("123", message.getId());
         assertNotNull(message.getCompleteTime());
-        assertEquals(List.of("complete", "success"), callbacks);
+        assertEquals(List.of("complete:null", "success"), callbacks);
     }
 
     @Test
@@ -179,7 +288,7 @@ class MiraiAdapterServiceTest {
         Message message = message();
         CountDownLatch intercepted = new CountDownLatch(1);
         message.addOnBeforeSendInterceptor(m -> { intercepted.countDown(); return false; });
-        service.send(message);
+        coreSender.send(message);
         assertTrue(intercepted.await(2, TimeUnit.SECONDS), "before-send interceptor must run");
         assertTrue(receivedAt.isEmpty());
         assertNull(message.getCompleteTime());
@@ -194,7 +303,7 @@ class MiraiAdapterServiceTest {
         first.addOnCompleteCallback(() -> callbacks.add("complete"));
         first.addOnFailureCallback(() -> { callbacks.add("failure"); failed.countDown(); });
         first.addOnSuccessCallback(() -> callbacks.add("success"));
-        assertDoesNotThrow(() -> service.send(first));
+        assertDoesNotThrow(() -> coreSender.send(first));
         assertTrue(failed.await(2, TimeUnit.SECONDS));
         assertNotNull(first.getCompleteTime());
         assertNull(first.getId());
@@ -203,7 +312,7 @@ class MiraiAdapterServiceTest {
         CountDownLatch success = new CountDownLatch(1);
         Message next = message();
         next.addOnSuccessCallback(success::countDown);
-        service.send(next);
+        coreSender.send(next);
         assertTrue(success.await(2, TimeUnit.SECONDS));
         assertEquals(2, receivedAt.size());
     }
@@ -211,13 +320,14 @@ class MiraiAdapterServiceTest {
     @Test
     void serialQueueEnforcesConfiguredMessageInterval() throws Exception {
         properties.setDelay(300);
+        nativeSenders.getSender("mirai").orElseThrow().setDelay(300);
         CountDownLatch sent = new CountDownLatch(2);
         Message first = message();
         Message second = message();
         first.addOnSuccessCallback(sent::countDown);
         second.addOnSuccessCallback(sent::countDown);
-        service.send(first);
-        service.send(second);
+        coreSender.send(first);
+        coreSender.send(second);
         assertTrue(sent.await(3, TimeUnit.SECONDS));
         assertEquals(2, receivedAt.size());
         assertTrue(TimeUnit.NANOSECONDS.toMillis(receivedAt.get(1) - receivedAt.get(0)) >= 280,

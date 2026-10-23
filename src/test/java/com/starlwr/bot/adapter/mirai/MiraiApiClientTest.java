@@ -14,15 +14,19 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class MiraiApiClientTest {
     private HttpServer server;
-    private final List<String> requests = new ArrayList<>();
+    private final List<String> requests = new CopyOnWriteArrayList<>();
     private final AtomicInteger fetchCount = new AtomicInteger();
     private final ExecutorService httpWorkers = Executors.newCachedThreadPool();
+    private final AtomicLong sessionBot = new AtomicLong(123456789L);
+    private final java.util.concurrent.atomic.AtomicReference<String> profile = new java.util.concurrent.atomic.AtomicReference<>(
+        "{\"nickname\":\"Example\",\"email\":\"example@example.com\",\"age\":18,\"level\":1,\"sign\":\"hello\",\"sex\":\"UNKNOWN\"}");
 
     @BeforeEach
     void startServer() throws IOException {
@@ -38,6 +42,10 @@ class MiraiApiClientTest {
                 "{\"code\":0,\"msg\":\"\",\"data\":[{\"type\":\"GroupMessage\",\"sender\":{\"id\":333333333},\"messageChain\":[]}]}" );
         });
         server.createContext("/release", exchange -> respond(exchange, "{\"code\":0,\"msg\":\"success\"}"));
+        server.createContext("/sessionInfo", exchange -> respond(exchange,
+            "{\"code\":0,\"data\":{\"qq\":{\"id\":" + sessionBot.get() + ",\"nickname\":\"Example\"}}}"));
+        server.createContext("/about", exchange -> respond(exchange, "{\"code\":0,\"data\":{\"version\":\"2.10.0\"}}"));
+        server.createContext("/botProfile", exchange -> respond(exchange, profile.get()));
         server.start();
     }
 
@@ -98,6 +106,68 @@ class MiraiApiClientTest {
         } finally {
             finishSend.countDown();
             send.get(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void connectionCheckValidatesBoundBotInsteadOfHttpAvailabilityOnly() {
+        MiraiApiClient client = new MiraiApiClient("http://127.0.0.1:" + server.getAddress().getPort(), new RestTemplate());
+        client.connect(123456789L, "test-key");
+        assertEquals("2.10.0", client.checkConnection().getString("version"));
+        profile.set("{\"code\":2,\"msg\":\"Bot does not exist\"}");
+        assertThrows(IllegalStateException.class, client::checkConnection);
+        sessionBot.set(999999999L);
+        assertThrows(IllegalStateException.class, client::checkConnection);
+    }
+
+    @Test
+    void cancelledSendWaitingForClientLockNeverStartsHttpRequest() throws Exception {
+        MiraiApiClient client = new MiraiApiClient("http://127.0.0.1:" + server.getAddress().getPort(), new RestTemplate());
+        client.connect(123456789L, "test-key");
+        CountDownLatch starting = new CountDownLatch(1);
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        try {
+            synchronized (client) {
+                Future<?> task = worker.submit(() -> {
+                    starting.countDown();
+                    client.sendGroupMessage(987654321L, new JSONArray());
+                });
+                assertTrue(starting.await(1, TimeUnit.SECONDS));
+                task.cancel(true);
+            }
+            worker.shutdown();
+            assertTrue(worker.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(requests.stream().noneMatch(request -> request.startsWith("/sendGroupMessage ")));
+        } finally {
+            worker.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancelledInFlightSendDoesNotReauthenticateOnExpiredResponse() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        server.removeContext("/sendGroupMessage");
+        server.createContext("/sendGroupMessage", exchange -> {
+            entered.countDown();
+            try { finish.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            respond(exchange, "{\"code\":3,\"msg\":\"expired\"}");
+        });
+        MiraiApiClient client = new MiraiApiClient("http://127.0.0.1:" + server.getAddress().getPort(), new RestTemplate());
+        client.connect(123456789L, "test-key");
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> task = worker.submit(() -> client.sendGroupMessage(987654321L, new JSONArray()));
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+            task.cancel(true);
+            finish.countDown();
+            worker.shutdown();
+            assertTrue(worker.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(1, requests.stream().filter(request -> request.startsWith("/verify ")).count());
+            assertEquals(1, requests.stream().filter(request -> request.startsWith("/sendGroupMessage ")).count());
+        } finally {
+            finish.countDown();
+            worker.shutdownNow();
         }
     }
 

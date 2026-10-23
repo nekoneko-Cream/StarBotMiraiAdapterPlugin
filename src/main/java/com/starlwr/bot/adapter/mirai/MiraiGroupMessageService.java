@@ -4,12 +4,14 @@ import com.alibaba.fastjson2.JSONArray;
 import com.starlwr.bot.core.datasource.AbstractDataSource;
 import com.starlwr.bot.core.enums.PushTargetType;
 import com.starlwr.bot.core.model.Message;
+import com.starlwr.bot.core.sender.StarBotMessageSender;
 import com.starlwr.bot.core.plugin.StarBotComponent;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,9 +29,10 @@ public class MiraiGroupMessageService implements AutoCloseable {
     });
     private boolean started;
     private boolean failed;
+    private volatile Instant lastMessageTime = Instant.now();
 
     public MiraiGroupMessageService(MiraiAdapterProperties properties, MiraiAdapterService adapter,
-                                    AbstractDataSource dataSource) {
+                                    AbstractDataSource dataSource, StarBotMessageSender sender) {
         this.properties = properties;
         this.adapter = adapter;
         this.commands = new MiraiCommandHandler(properties, () -> {
@@ -38,8 +41,7 @@ public class MiraiGroupMessageService implements AutoCloseable {
                 return dataSource.getAllUsers().stream()
                     .flatMap(user -> dataSource.getUser(user.getPlatform(), user.getUid()).stream()).toList();
             }
-        }, (group, text) ->
-            Message.create(properties.getPlatform(), PushTargetType.GROUP, group, text).forEach(adapter::send),
+        }, sender::send,
             Clock.systemUTC());
     }
 
@@ -48,7 +50,7 @@ public class MiraiGroupMessageService implements AutoCloseable {
         if (started || !properties.isEnabled() || !properties.isReceiveEnabled() || properties.getBotQq() <= 0) return;
         started = true;
         receiver.scheduleWithFixedDelay(this::poll, 0, Math.max(200, properties.getPollInterval()), TimeUnit.MILLISECONDS);
-        log.info("Mirai 群消息接收已启用，仅响应数据源中已启用的 Mirai 群：status / help / version / subscriptions");
+        log.info("Mirai 消息接收已启用，命令模式 {}", properties.getCommandMode());
     }
 
     void poll() {
@@ -60,8 +62,11 @@ public class MiraiGroupMessageService implements AutoCloseable {
             for (int i = 0; i < events.size(); i++) {
                 try {
                     var event = events.getJSONObject(i);
+                    if (event != null && event.getString("type") != null && event.getString("type").endsWith("Message")) {
+                        lastMessageTime = Instant.now();
+                    }
                     if (commands.handle(event)) {
-                        log.info("已处理 Mirai 群指令，群 {}", event.getJSONObject("sender").getJSONObject("group").getLong("id"));
+                        log.info("已处理 Mirai {} 指令", event.getString("type"));
                     }
                 } catch (Exception e) {
                     log.warn("已跳过无法处理的 Mirai 群消息：{}", e.getClass().getSimpleName());
@@ -71,6 +76,10 @@ public class MiraiGroupMessageService implements AutoCloseable {
             if (!failed) log.warn("Mirai 群消息接收失败，将继续重试（{}）", e.getClass().getSimpleName());
             failed = true;
         }
+    }
+
+    public Instant getLastMessageTime() {
+        return lastMessageTime;
     }
 
     @Override

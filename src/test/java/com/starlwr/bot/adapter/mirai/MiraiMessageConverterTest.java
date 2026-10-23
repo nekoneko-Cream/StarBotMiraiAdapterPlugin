@@ -36,4 +36,21 @@ class MiraiMessageConverterTest {
         assertEquals("Image", result.getJSONObject(0).getString("type"));
         assertEquals("https://example.com/a.png", result.getJSONObject(0).getString("url"));
     }
+
+    @Test
+    void convertsFaceLocalImageAndBase64WithLiteralExpectedChain() {
+        JSONArray result = converter.convert("{face=14} {image_path=C:/example/a.png}{image_base64=YWJj}");
+        assertEquals(com.alibaba.fastjson2.JSON.parseArray("""
+            [{"type":"Face","faceId":14},{"type":"Plain","text":" "},
+             {"type":"Image","path":"C:/example/a.png"},{"type":"Image","base64":"YWJj"}]
+            """), result);
+    }
+
+    @Test
+    void preservesUnknownAndMalformedPlaceholdersAsText() {
+        JSONArray result = converter.convert("hello{unknown=x}{face=NaN}{unfinished");
+        String text = result.stream().map(item -> ((com.alibaba.fastjson2.JSONObject) item).getString("text"))
+            .collect(java.util.stream.Collectors.joining());
+        assertEquals("hello{unknown=x}{face=NaN}{unfinished", text);
+    }
 }

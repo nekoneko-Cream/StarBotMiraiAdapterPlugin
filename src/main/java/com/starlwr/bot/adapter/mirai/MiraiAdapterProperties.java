@@ -21,6 +21,19 @@ public class MiraiAdapterProperties {
     private int delay = 1000;
     private boolean receiveEnabled = true;
     private int pollInterval = 1000;
+    private String commandMode = "native";
+    private Detect detect = new Detect();
+
+    @Getter
+    @Setter
+    public static class Detect {
+        private boolean enableHttpDetect = false;
+        private int httpDetectInterval = 300;
+        private int httpAlarmMailInterval = 3600;
+        private boolean enableMessageDetect = false;
+        private int messageDetectInterval = 1800;
+        private int messageAlarmMailInterval = 3600;
+    }
 
     public String getBaseUrl() {
         return "http://" + host + ":" + port;

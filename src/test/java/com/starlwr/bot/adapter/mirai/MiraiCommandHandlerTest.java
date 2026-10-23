@@ -20,6 +20,7 @@ class MiraiCommandHandlerTest {
     private final List<PushUser> users = new ArrayList<>();
     private final List<Long> destinations = new ArrayList<>();
     private final List<String> replies = new ArrayList<>();
+    private final List<PushTargetType> types = new ArrayList<>();
     private Instant now = Instant.ofEpochSecond(1800000000L);
     private final Clock clock = new Clock() {
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
@@ -31,11 +32,13 @@ class MiraiCommandHandlerTest {
     @BeforeEach
     void setUp() {
         properties.setBotQq(123456789L);
+        properties.setCommandMode("extended");
         users.add(user(111L, 987654321L));
         users.add(user(222L, 555555555L));
-        handler = new MiraiCommandHandler(properties, () -> users, (group, text) -> {
-            destinations.add(group);
-            replies.add(text);
+        handler = new MiraiCommandHandler(properties, () -> users, message -> {
+            destinations.add(message.getNum());
+            replies.add(message.getContent());
+            types.add(message.getType());
         }, clock);
     }
 
@@ -138,6 +141,40 @@ class MiraiCommandHandlerTest {
         assertTrue(handler.handle(event("订阅")));
         assertTrue(replies.get(0).contains("111"));
         assertFalse(replies.get(0).contains("222"));
+    }
+
+    @Test
+    void nativeStatusUsesOfficialWordingWithoutSubscriptionRequirement() {
+        properties.setCommandMode("native");
+        users.clear();
+        assertTrue(handler.handle(event("STATUS")));
+        assertEquals(List.of("Running on StarBot v3.0.0"), replies);
+        assertEquals(List.of(PushTargetType.GROUP), types);
+    }
+
+    @Test
+    void nativeStatusRepliesToFriendSender() {
+        properties.setCommandMode("native");
+        JSONObject friend = event("status");
+        friend.put("type", "FriendMessage");
+        friend.getJSONObject("sender").remove("group");
+        assertTrue(handler.handle(friend));
+        assertEquals(List.of(333333333L), destinations);
+        assertEquals(List.of(PushTargetType.FRIEND), types);
+        assertEquals(List.of("Running on StarBot v3.0.0"), replies);
+    }
+
+    @Test
+    void nativeModeDoesNotAddExtendedAliasesOrCooldown() {
+        properties.setCommandMode("native");
+        assertFalse(handler.handle(event("help")));
+        assertFalse(handler.handle(event("状态")));
+        assertFalse(handler.handle(event("/status")));
+        assertTrue(handler.handle(event("status")));
+        JSONObject next = event("status");
+        next.getJSONArray("messageChain").getJSONObject(0).put("id", 43);
+        assertTrue(handler.handle(next));
+        assertEquals(2, replies.size());
     }
 
     private JSONObject event(String text) {

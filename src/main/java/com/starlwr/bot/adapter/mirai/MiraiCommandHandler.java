@@ -4,25 +4,26 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.starlwr.bot.core.enums.PushTargetType;
 import com.starlwr.bot.core.model.PushUser;
+import com.starlwr.bot.core.model.Message;
 import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** Read-only commands scoped to enabled Mirai group subscriptions. */
 public final class MiraiCommandHandler {
     private final MiraiAdapterProperties properties;
     private final Supplier<List<PushUser>> users;
-    private final BiConsumer<Long, String> reply;
+    private final Consumer<Message> reply;
     private final Clock clock;
     private final Map<String, Boolean> seen = new LinkedHashMap<>();
     private final Map<Long, Long> lastReply = new LinkedHashMap<>();
 
     public MiraiCommandHandler(MiraiAdapterProperties properties, Supplier<List<PushUser>> users,
-                               BiConsumer<Long, String> reply, Clock clock) {
+                               Consumer<Message> reply, Clock clock) {
         this.properties = properties;
         this.users = users;
         this.reply = reply;
@@ -31,23 +32,26 @@ public final class MiraiCommandHandler {
 
     public synchronized boolean handle(JSONObject event) {
         if (!properties.isEnabled() || !properties.isReceiveEnabled() || event == null
-            || !"GroupMessage".equals(event.getString("type"))) {
+            || !("GroupMessage".equals(event.getString("type")) || "FriendMessage".equals(event.getString("type")))) {
             return false;
         }
         JSONObject sender = event.getJSONObject("sender");
         JSONObject group = sender == null ? null : sender.getJSONObject("group");
         Long groupId = group == null ? null : group.getLong("id");
         Long senderId = sender == null ? null : sender.getLong("id");
-        if (groupId == null || senderId == null || senderId == properties.getBotQq()) {
+        boolean groupMessage = "GroupMessage".equals(event.getString("type"));
+        if ((groupMessage && groupId == null) || (!groupMessage && group != null)
+            || senderId == null || senderId == properties.getBotQq()) {
             return false;
         }
-        List<PushUser> subscribed = users.get().stream()
+        boolean extended = "extended".equalsIgnoreCase(properties.getCommandMode());
+        List<PushUser> subscribed = !extended || !groupMessage ? List.of() : users.get().stream()
             .filter(user -> Boolean.TRUE.equals(user.getEnabled()))
             .filter(user -> user.getTargets().stream().anyMatch(target ->
                 Boolean.TRUE.equals(target.getEnabled()) && properties.getPlatform().equals(target.getPlatform())
                 && target.getType() == PushTargetType.GROUP && groupId.equals(target.getNum())))
             .toList();
-        if (subscribed.isEmpty()) {
+        if (extended && groupMessage && subscribed.isEmpty()) {
             return false;
         }
         JSONArray chain = event.getJSONArray("messageChain");
@@ -78,26 +82,28 @@ public final class MiraiCommandHandler {
         Long messageId = source == null ? null : source.getLong("id");
         if (time == null || messageId == null || now - time > 60 || time - now > 10) return false;
         String command = text.toString().strip().toLowerCase(Locale.ROOT);
-        if (command.startsWith("/")) command = command.substring(1);
-        String response = switch (command) {
+        if (extended && command.startsWith("/")) command = command.substring(1);
+        String response = !extended ? ("status".equals(command) ? "Running on StarBot v3.0.0" : null) : switch (command) {
             case "status", "状态" -> "StarBot 3\n连接：Mirai HTTP 已连接\n本群订阅：" + subscribed.size()
                 + " 位主播\n群消息指令：已启用";
             case "help", "帮助", "菜单" -> "StarBot 3 指令\nstatus / 状态：运行状态\nsubscriptions / 订阅 / 主播列表：本群订阅\nversion / 版本：版本信息\nhelp / 帮助：本菜单\n支持直接发送，或 @本机器人 后发送。";
-            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.0.2-beta.1";
+            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.1.0-beta.1";
             case "subscriptions", "订阅", "主播列表" -> subscriptions(subscribed);
             default -> null;
         };
         if (response == null) return false;
-        String key = groupId + ":" + senderId + ":" + messageId + ":" + time;
+        Long targetId = groupMessage ? groupId : senderId;
+        String key = event.getString("type") + ":" + targetId + ":" + senderId + ":" + messageId + ":" + time;
         if (seen.containsKey(key)) return false;
         seen.put(key, true);
         if (seen.size() > 512) seen.remove(seen.keySet().iterator().next());
-        Long previous = lastReply.get(groupId);
+        Long previous = lastReply.get(targetId);
         long nowMillis = clock.millis();
-        if (previous != null && nowMillis - previous < 3000) return false;
-        lastReply.put(groupId, nowMillis);
+        if (extended && previous != null && nowMillis - previous < 3000) return false;
+        lastReply.put(targetId, nowMillis);
         if (lastReply.size() > 512) lastReply.remove(lastReply.keySet().iterator().next());
-        reply.accept(groupId, response);
+        Message.create(properties.getPlatform(), groupMessage ? PushTargetType.GROUP : PushTargetType.FRIEND,
+            targetId, response).forEach(reply);
         return true;
     }
 
