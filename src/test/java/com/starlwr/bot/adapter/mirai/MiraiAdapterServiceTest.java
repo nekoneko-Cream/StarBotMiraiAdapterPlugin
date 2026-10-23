@@ -2,6 +2,10 @@ package com.starlwr.bot.adapter.mirai;
 
 import com.starlwr.bot.core.enums.PushTargetType;
 import com.starlwr.bot.core.model.Message;
+import com.starlwr.bot.core.model.PushUser;
+import com.starlwr.bot.core.model.PushTarget;
+import com.starlwr.bot.core.datasource.AbstractDataSource;
+import com.alibaba.fastjson2.JSON;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +19,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,18 +29,22 @@ class MiraiAdapterServiceTest {
     private MiraiAdapterService service;
     private final List<Long> receivedAt = new CopyOnWriteArrayList<>();
     private final AtomicInteger sendCode = new AtomicInteger();
+    private final AtomicReference<String> incoming = new AtomicReference<>("[]");
+    private final List<String> bodies = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
-            exchange.getRequestBody().readAllBytes();
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             String path = exchange.getRequestURI().getPath();
             String result = switch (path) {
                 case "/verify" -> "{\"code\":0,\"session\":\"test-session\"}";
-                case "/bind" -> "{\"code\":0,\"msg\":\"success\"}";
+                case "/bind", "/release" -> "{\"code\":0,\"msg\":\"success\"}";
+                case "/fetchMessage" -> "{\"code\":0,\"msg\":\"\",\"data\":" + incoming.getAndSet("[]") + "}";
                 case "/sendGroupMessage", "/sendFriendMessage" -> {
                     receivedAt.add(System.nanoTime());
+                    bodies.add(request);
                     yield "{\"code\":" + sendCode.get() + ",\"msg\":\"test-result\",\"messageId\":123}";
                 }
                 default -> "{\"code\":400,\"msg\":\"unexpected path\"}";
@@ -67,6 +76,87 @@ class MiraiAdapterServiceTest {
     void ignoresMessagesForAnotherPlatform() {
         Message message = Message.create("qq-onebot", PushTargetType.GROUP, 987654321L, "hello").get(0);
         assertFalse(service.shouldHandle(message));
+    }
+
+    @Test
+    void polledGroupCommandReachesExistingHttpSender() throws Exception {
+        PushTarget target = new PushTarget();
+        target.setPlatform("mirai");
+        target.setType(PushTargetType.GROUP);
+        target.setNum(987654321L);
+        target.setEnabled(true);
+        PushUser user = new PushUser();
+        user.setUid(111L);
+        user.setPlatform("bilibili");
+        user.setEnabled(true);
+        user.getTargets().add(target);
+        AbstractDataSource dataSource = new AbstractDataSource(null, null, null) {
+            @Override public void load() { }
+            @Override public List<PushUser> getAllUsers() { return List.of(user); }
+            @Override public java.util.Optional<PushUser> getUser(String platform, Long uid) { return java.util.Optional.of(user); }
+        };
+        var event = JSON.parseObject("""
+            {"type":"GroupMessage","sender":{"id":333333333,"group":{"id":987654321}},
+            "messageChain":[{"type":"Source","id":12},{"type":"Plain","text":"status"}]}
+            """);
+        event.getJSONArray("messageChain").getJSONObject(0).put("time", java.time.Instant.now().getEpochSecond());
+        incoming.set("[" + event.toJSONString() + "]");
+        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource)) {
+            receiver.poll();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (bodies.isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals(1, bodies.size());
+            var request = JSON.parseObject(bodies.get(0));
+            assertEquals(987654321L, request.getLongValue("target"));
+            assertTrue(request.getJSONArray("messageChain").getJSONObject(0).getString("text").contains("本群订阅：1"));
+            receiver.poll();
+            assertEquals(1, bodies.size());
+        }
+    }
+
+    @Test
+    void hotReloadMovesCommandAuthorizationToNewGroup() throws Exception {
+        var registry = new com.starlwr.bot.core.datasource.DataSourceServiceRegistry(List.of()) {
+            @Override public java.util.Optional<com.starlwr.bot.core.service.DataSourceService> getDataSourceService(String platform) {
+                return java.util.Optional.of(user -> { });
+            }
+        };
+        AbstractDataSource dataSource = new AbstractDataSource(event -> { }, registry,
+            new com.starlwr.bot.core.service.StarBotEventHandlerService(null)) {
+            @Override public void load() { }
+        };
+        dataSource.add(new java.util.ArrayList<>(List.of(pushUser(987654321L))));
+        dataSource.update(new java.util.ArrayList<>(List.of(pushUser(555555555L))));
+        var oldGroup = JSON.parseObject("""
+            {"type":"GroupMessage","sender":{"id":333333333,"group":{"id":987654321}},
+            "messageChain":[{"type":"Source","id":21},{"type":"Plain","text":"status"}]}
+            """);
+        oldGroup.getJSONArray("messageChain").getJSONObject(0).put("time", java.time.Instant.now().getEpochSecond());
+        var newGroup = JSON.parseObject(oldGroup.toJSONString());
+        newGroup.getJSONObject("sender").getJSONObject("group").put("id", 555555555L);
+        incoming.set("[" + oldGroup.toJSONString() + "," + newGroup.toJSONString() + "]");
+        try (MiraiGroupMessageService receiver = new MiraiGroupMessageService(properties, service, dataSource)) {
+            receiver.poll();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (bodies.isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals(1, bodies.size());
+            assertEquals(555555555L, JSON.parseObject(bodies.get(0)).getLongValue("target"));
+        }
+    }
+
+    private PushUser pushUser(long group) {
+        PushTarget target = new PushTarget();
+        target.setPlatform("mirai");
+        target.setType(PushTargetType.GROUP);
+        target.setNum(group);
+        target.setEnabled(true);
+        PushUser user = new PushUser();
+        user.setUid(111L);
+        user.setPlatform("bilibili");
+        user.setUname("Example");
+        user.setEnabled(true);
+        user.getTargets().add(target);
+        return user;
     }
 
     @Test

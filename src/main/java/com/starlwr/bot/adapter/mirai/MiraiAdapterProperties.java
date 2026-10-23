@@ -19,6 +19,8 @@ public class MiraiAdapterProperties {
     private String verifyKey = "StarBot";
     private long botQq;
     private int delay = 1000;
+    private boolean receiveEnabled = true;
+    private int pollInterval = 1000;
 
     public String getBaseUrl() {
         return "http://" + host + ":" + port;

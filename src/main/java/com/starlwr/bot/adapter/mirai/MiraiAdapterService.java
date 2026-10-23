@@ -89,6 +89,10 @@ public class MiraiAdapterService implements AutoCloseable {
         return properties.isEnabled() && message != null && properties.getPlatform().equals(message.getPlatform());
     }
 
+    public JSONArray fetchMessages(int count) {
+        return client.fetchMessages(count);
+    }
+
     public void send(Message message) {
         if (!shouldHandle(message)) {
             return;
@@ -151,5 +155,10 @@ public class MiraiAdapterService implements AutoCloseable {
     @PreDestroy
     public void close() {
         sender.shutdownNow();
+        try {
+            client.close();
+        } catch (Exception e) {
+            log.warn("释放 Mirai 会话失败（{}）", e.getClass().getSimpleName());
+        }
     }
 }

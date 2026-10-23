@@ -3,11 +3,14 @@ package com.starlwr.bot.adapter.mirai;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 
 import java.util.Map;
 
 /** Minimal client for Mirai API HTTP 2.x. */
-public final class MiraiApiClient {
+public final class MiraiApiClient implements AutoCloseable {
     private final String baseUrl;
     private final RestTemplate http;
     private String sessionKey;
@@ -42,6 +45,45 @@ public final class MiraiApiClient {
 
     public synchronized String sendFriendMessage(long qq, JSONArray messageChain) {
         return send("/sendFriendMessage", qq, messageChain);
+    }
+
+    public synchronized JSONArray fetchMessages(int count) {
+        if (sessionKey == null) {
+            connect(botQq, verifyKey);
+        }
+        JSONObject result = fetch(count);
+        Integer code = result.getInteger("code");
+        if (code != null && (code == 3 || code == 4)) {
+            sessionKey = null;
+            connect(botQq, verifyKey);
+            result = fetch(count);
+        }
+        check(result, "fetchMessage");
+        JSONArray events = result.getJSONArray("data");
+        if (events == null) {
+            throw new IllegalStateException("Mirai fetchMessage returned no event array");
+        }
+        return events;
+    }
+
+    private JSONObject fetch(int count) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("sessionKey", sessionKey);
+        JSONObject result = http.exchange(baseUrl + "/fetchMessage?count=" + Math.max(1, Math.min(100, count)),
+            HttpMethod.GET, new HttpEntity<>(headers), JSONObject.class).getBody();
+        if (result == null) {
+            throw new IllegalStateException("Mirai returned an empty response for fetchMessage");
+        }
+        return result;
+    }
+
+    @Override
+    public synchronized void close() {
+        if (sessionKey != null) {
+            String key = sessionKey;
+            sessionKey = null;
+            check(post("/release", Map.of("sessionKey", key, "qq", botQq)), "release");
+        }
     }
 
     private String send(String path, long target, JSONArray messageChain) {
