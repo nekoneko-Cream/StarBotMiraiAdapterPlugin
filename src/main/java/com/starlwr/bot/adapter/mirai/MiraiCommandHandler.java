@@ -87,7 +87,7 @@ public final class MiraiCommandHandler {
             case "status", "状态" -> "StarBot 3\n连接：Mirai HTTP 已连接\n本群订阅：" + subscribed.size()
                 + " 位主播\n群消息指令：已启用";
             case "help", "帮助", "菜单" -> "StarBot 3 指令\nstatus / 状态：运行状态\nsubscriptions / 订阅 / 主播列表：本群订阅\nversion / 版本：版本信息\nhelp / 帮助：本菜单\n支持直接发送，或 @本机器人 后发送。";
-            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.1.0-beta.1";
+            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.1.0-beta.2";
             case "subscriptions", "订阅", "主播列表" -> subscriptions(subscribed);
             default -> null;
         };
