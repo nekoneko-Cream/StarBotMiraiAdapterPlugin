@@ -2,7 +2,7 @@
 
 在 StarBot 3 中继续使用现有 MCL / Mirai Console + mirai-api-http，按官方适配器的接口接入 Core。
 
-**版本：1.1.0-beta.2。** 本版新增 WebSocket 实时消息推送（异常自动回退 HTTP 轮询）并优化默认收发延迟。**当前仅适配并验证支持 StarBot 3.0-beta10，其他版本不一定能用。** 与旧版的差异和验证范围见 [适配清单](docs/compatibility.md)。
+**版本：1.1.0。** 本版新增 WebSocket 实时消息推送（异常自动回退 HTTP 轮询）并优化默认收发延迟。**当前仅适配并验证支持 StarBot 3.0-beta10，其他版本不一定能用。** 与旧版的差异和验证范围见 [适配清单](docs/compatibility.md)。
 
 ## 与官方流程一致的部分
 
@@ -97,7 +97,7 @@ Core 队列在内存中，停止程序会丢弃未处理消息。原生 Core 没
 
 ```powershell
 mvn -B -ntp clean verify
-Get-FileHash .\target\starbot-mirai-adapter-1.1.0-beta.2.jar -Algorithm SHA256
+Get-FileHash .\target\starbot-mirai-adapter-1.1.0.jar -Algorithm SHA256
 ```
 
 测试覆盖真实 Core 发送器到本地 HTTP/MockMvc 再到模拟 Mirai 的路径，以及转换、群/好友命令、会话恢复、取消和检测。模拟测试不会登录真实 QQ。
