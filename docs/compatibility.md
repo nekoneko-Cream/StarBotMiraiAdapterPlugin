@@ -7,7 +7,8 @@
 | 功能 | 实现情况 | 验证范围 |
 | --- | --- | --- |
 | 普通 Sender 注册、推送平台列表 | 已接入 Core，替代旧 AOP | 本地真实 Core 集成测试 |
-| 队列、delay、发送前拦截 | 使用 Core 原实现 | 实际 Core + HTTP 测试 |
+| WebSocket 实时收消息 + HTTP 轮询回退 | 优先连接 `ws://host:port/message`（可配 `websocket-enabled`），断连/未启用自动回退 HTTP 轮询并按 3 秒冷却重连 | 单元测试与本地真实联调 |
+| 队列、delay、发送前拦截 | 使用 Core 原实现（默认 `delay: 200`、`poll-interval: 200`） | 实际 Core + HTTP 测试 |
 | completeTime、完成/成功/失败回调 | 使用 Core 原实现，完成先于成功 ID 回填 | 实际 Core + HTTP 测试 |
 | 群/好友发送 | Mirai API 转换 | 模拟 HTTP；本版群文字已完成真实投递，好友尚未实测 |
 | status 官方文字与群/好友范围 | 默认 native，无订阅限制 | 群聊官方文字已获实际收件确认；好友通过测试 |

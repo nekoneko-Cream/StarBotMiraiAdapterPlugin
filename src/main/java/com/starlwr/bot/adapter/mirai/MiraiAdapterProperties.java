@@ -18,9 +18,10 @@ public class MiraiAdapterProperties {
     private int port = 7827;
     private String verifyKey = "StarBot";
     private long botQq;
-    private int delay = 1000;
+    private int delay = 200;
     private boolean receiveEnabled = true;
-    private int pollInterval = 1000;
+    private boolean websocketEnabled = true;
+    private int pollInterval = 200;
     private String commandMode = "native";
     private Detect detect = new Detect();
 

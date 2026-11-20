@@ -115,6 +115,21 @@ public final class MiraiApiClient implements AutoCloseable {
         return new JSONObject().fluentPut("id", botQq).fluentPut("version", about.getJSONObject("data").getString("version"));
     }
 
+    public String fetchVersion() {
+        ensureActive();
+        JSONObject about = http.getForObject(baseUrl + "/about", JSONObject.class);
+        if (about == null) {
+            throw new IllegalStateException("Mirai returned an empty response for /about");
+        }
+        check(about, "about");
+        JSONObject data = about.getJSONObject("data");
+        String version = data == null ? null : data.getString("version");
+        if (version == null || version.isBlank()) {
+            throw new IllegalStateException("Mirai about returned no version");
+        }
+        return version;
+    }
+
     private JSONObject get(String path, String key) {
         ensureActive();
         HttpHeaders headers = new HttpHeaders();

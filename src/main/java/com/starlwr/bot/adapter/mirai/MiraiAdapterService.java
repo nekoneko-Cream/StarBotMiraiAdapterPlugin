@@ -70,6 +70,14 @@ public class MiraiAdapterService implements AutoCloseable {
         return client.checkConnection();
     }
 
+    public String fetchApiVersion() {
+        try {
+            return client.fetchVersion();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     @Override
     @PreDestroy
     public void close() {

@@ -23,7 +23,7 @@
 
 ## 配置
 
-MCL 的 `config/net.mamoe.mirai-api-http/setting.yml` 需开启 HTTP adapter，`enableVerify: true`、`singleMode: false`，HTTP 端口例如 7827，`unreadQueueMaxSize` 大于 0。保留已有其他 adapter；本插件不要求 WebSocket。
+MCL 的 `config/net.mamoe.mirai-api-http/setting.yml` 需开启 HTTP adapter，`enableVerify: true`、`singleMode: false`，HTTP 端口例如 7827，`unreadQueueMaxSize` 大于 0。若同时开启 `ws` adapter，插件会优先通过 WebSocket 实时接收消息以消除轮询延迟；未开启 `ws` 或连接断开时会自动无感回退到 HTTP 轮询。
 
 StarBot 的 `application.yml` 合并到已有节点：
 
@@ -40,9 +40,10 @@ starbot:
       port: 7827
       verify-key: "replace-with-your-mirai-verify-key"
       bot-qq: 123456789
-      delay: 1000
+      delay: 200
       receive-enabled: true
-      poll-interval: 1000
+      websocket-enabled: true
+      poll-interval: 200
       command-mode: native
       detect:
         enable-http-detect: false
@@ -53,7 +54,7 @@ starbot:
         message-alarm-mail-interval: 3600
 ```
 
-账号和密钥均为示例，必须替换，密钥与 Mirai 一致。`delay`、`poll-interval` 单位为毫秒，检测和告警间隔单位为秒。轮询最小间隔 200 毫秒。StarBot 与 Mirai 端口必须不同，不要重复 YAML 节点。
+账号和密钥均为示例，必须替换，密钥与 Mirai 一致。`delay`、`poll-interval` 单位为毫秒（默认均已调整为 200ms，轮询最小间隔 100ms），检测和告警间隔单位为秒。`websocket-enabled` 默认为 `true`（优先使用 `ws://host:port/message` 实时接收消息，不可用时自动回退 HTTP 轮询并按 3 秒冷却自动重连）。StarBot 与 Mirai 端口必须不同，不要重复 YAML 节点。
 
 3.0 数据源中需要通过 Mirai 推送的目标使用 `platform: mirai`。平台由插件自动注册，无需另外在 `starbot.core.sender` 声明同名 `mirai`，否则会与 Core 的重名保护冲突。其他推送平台配置照常使用。
 
