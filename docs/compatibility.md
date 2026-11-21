@@ -2,15 +2,19 @@
 
 对照本机 **StarBot 3.0-beta10** 的 Core 3.0.0 与官方 OneBot 适配器接口（**本插件仅保证支持 StarBot 3.0-beta10，其他版本不一定能用**）。参考源码检出：Core `4ca3201fc9a8de3bf368bc61df084c1f9918843f`，OneBot `16237a8636efeede23409adf104a50b217271f26`；开发时另核对了实际部署 JAR 的公共方法。
 
-## 1.1.0 对齐内容
+## 1.1.2 对齐内容
 
 | 功能 | 实现情况 | 验证范围 |
 | --- | --- | --- |
 | 普通 Sender 注册、推送平台列表 | 已接入 Core，替代旧 AOP | 本地真实 Core 集成测试 |
-| WebSocket 实时收消息 + HTTP 轮询回退 | 优先连接 `ws://host:port/message`（可配 `websocket-enabled`），断连/未启用自动回退 HTTP 轮询并按 3 秒冷却重连 | 单元测试与本地真实联调 |
+| 单 Bot 自动跟随与换号恢复 | `auto-follow-online-bot`（默认 `true`），支持省略 `bot-qq` 或在 Mirai 控制台 `/switch` 换号后通过 `/botList` 自动重绑 HTTP/WebSocket 及 `@机器人` 识别，并输出隐私脱敏后的中文原因日志 | 模拟 HTTP/WebSocket 与单元测试 |
+| `@全体成员` 权限预检、额度感知与自动回退 | 新增 `at-all-fallback-enabled`（默认 `true`）、`at-all-no-permission-message`、`at-all-limited-message`、`group-permission-cache-seconds`（默认 `30`）：通过 `/groupList` 预检及 `/all` 事件实时缓存群权限，无管理员权限或当日全体次数耗尽时自动去 `@全体成员` 改发普通消息并附带群提示（15 秒冷却），支持 `{at=all}{next}...` 拆分场景及发后异常/静默丢弃（`messageId=-1`）回退 | 模拟 HTTP/WebSocket 与单元测试（67/67 通过） |
+| 群消息回执核验与细化错误码 | 新增 `verify-group-receipt`（默认 `true`），识别 `code=0` 但 `messageId <= 0` 的群回执超时/静默丢弃，并区分 `code=10/20/30/500`、禁言、`AT_ALL_LIMITED`、`GROUP_CHAT_LIMITED` 等原因 | 模拟 HTTP 与单元测试 |
+| WebSocket `/all` 实时收消息、权限/禁言事件同步 + HTTP 轮询回退 | 优先连接 `ws://host:port/all`（可配 `websocket-enabled`），同步处理群/好友消息及 `BotGroupPermissionChangeEvent`、`BotJoinGroupEvent`、`BotLeaveEvent*`、`BotMuteEvent`、`BotUnmuteEvent`、`GroupMuteAllEvent`，断连/未启用自动回退 HTTP 轮询并按 3 秒冷却重连 | 单元测试与模拟 WS 联调 |
+| 群指令权限控制 | 新增 `command-permission`（`all` / `admin` / `owner`，默认 `all`）与 `admin-qqs` 白名单，统一约束 `native` 与 `extended` 群指令 | 单元测试 |
 | 队列、delay、发送前拦截 | 使用 Core 原实现（默认 `delay: 200`、`poll-interval: 200`） | 实际 Core + HTTP 测试 |
 | completeTime、完成/成功/失败回调 | 使用 Core 原实现，完成先于成功 ID 回填 | 实际 Core + HTTP 测试 |
-| 群/好友发送 | Mirai API 转换 | 模拟 HTTP；本版群文字已完成真实投递，好友尚未实测 |
+| 群/好友发送 | Mirai API 转换 | 模拟 HTTP；群文字已完成真实投递，好友尚未实测 |
 | status 官方文字与群/好友范围 | 默认 native，无订阅限制 | 群聊官方文字已获实际收件确认；好友通过测试 |
 | @、@全体、表情、URL/路径/Base64 图片 | 已转换为 Mirai 消息链 | 转换测试，真实 QQ 图片未逐项验证 |
 | next 分条 | 使用 Core Message.create 与队列 | Core 到 Mirai 模拟接口顺序测试 |

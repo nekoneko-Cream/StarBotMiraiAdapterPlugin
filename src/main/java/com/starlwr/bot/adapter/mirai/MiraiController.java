@@ -50,8 +50,11 @@ public class MiraiController implements AutoCloseable {
     @EventListener(ApplicationReadyEvent.class)
     public synchronized void onApplicationReady() {
         if (registered || !properties.isEnabled()) return;
-        if (properties.getBotQq() <= 0 || properties.getPlatform() == null || properties.getPlatform().isBlank()) {
-            throw new IllegalArgumentException("Mirai bot-qq 与 platform 必须配置");
+        if (properties.getPlatform() == null || properties.getPlatform().isBlank()) {
+            throw new IllegalArgumentException("Mirai platform 必须配置");
+        }
+        if (properties.getBotQq() <= 0 && !properties.isAutoFollowOnlineBot()) {
+            throw new IllegalArgumentException("关闭 auto-follow-online-bot 时必须配置 Mirai bot-qq");
         }
         String prefix = context.getEnvironment() == null ? "" :
             context.getEnvironment().getProperty("server.servlet.context-path", "");

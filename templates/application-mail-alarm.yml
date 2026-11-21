@@ -1,0 +1,95 @@
+# StarBot 3.0-beta10 + StarBotMiraiAdapterPlugin (v1.1.2) 带邮件告警配置模板
+# 对应官方「application带邮件告警版本.yml」的 Mirai 适配版本。
+# 用法：将本文件复制并重命名为 StarBot 3 目录下的 application.yml，修改标注为【必须修改】的字段即可。
+# 注意：
+# 1. server.port 已改为 7828，避免与 mirai-api-http 默认端口 7827 冲突。
+# 2. 已移除官方模板中的 starbot.adapter.onebot（含 detect 与 extension.napcat）占位块，
+#    并替换为 starbot.adapter.mirai.detect（注意收消息检测字段名为 enable-message-detect，
+#    不是 onebot 里的 enable-websocket-detect）。
+# 3. 邮件发信沿用 StarBot Core 的 spring.mail 与 starbot.core.mail.default-to。
+
+server:
+  port: 7828 # StarBot 服务端口，必须与 mirai-api-http 端口（默认 7827）不同
+
+spring:
+  profiles:
+    active: json # 要启用的配置文件，json：JSON数据源，mysql：MySQL数据源
+  thymeleaf:
+    check-template-location: false
+  mail:
+    host: smtp.qq.com # QQ 邮箱使用该地址，其他邮箱自行修改
+    port: 587 # QQ 邮箱使用该端口，其他邮箱自行修改
+    username: "replace-with-your-sender@qq.com" # 【必须修改】发信邮箱地址
+    password: "replace-with-your-smtp-auth-code" # 【必须修改】发信授权码（不是 QQ 登录密码，请在邮箱设置中申请）
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+starbot:
+  adapter:
+    mirai:
+      enabled: true
+      platform: mirai # 推送平台名称，需与 datasource.json 中 targets[].platform 保持一致
+      host: 127.0.0.1 # Mirai 所在主机地址，本机填 127.0.0.1 或 localhost
+      port: 7827 # 与 mirai-api-http 的 setting.yml 端口一致
+      verify-key: "replace-with-your-mirai-verify-key" # 【必须修改】与 mirai-api-http 的 verifyKey 完全一致
+      bot-qq: 0 # 开启 auto-follow-online-bot 时填 0 即可自动绑定当前唯一在线 Bot；多号在线请填具体 QQ 号
+      auto-follow-online-bot: true # 单号模式自动跟随在线 Bot，Mirai 控制台 /switch 换号免改配置免重启
+      delay: 200 # 消息发送间隔（毫秒）
+      receive-enabled: true # 是否接收群聊/私聊消息与权限事件
+      websocket-enabled: true # 优先使用 ws://host:port/all 实时收消息与事件，异常自动回退 HTTP 轮询
+      poll-interval: 200 # HTTP 轮询回退间隔（毫秒，最小 100）
+      command-mode: native # native：官方 3.0 默认（仅 status）；extended：启用扩展群命令
+      command-permission: all # 群指令触发权限：all / admin / owner（仅约束群聊，私聊不受影响）
+      admin-qqs: [] # 额外允许执行受限群指令的 QQ 白名单，例如：[123456789]
+      at-all-fallback-enabled: true # 无管理员权限或当日全体次数耗尽时，自动去 @全体成员 改发普通消息
+      at-all-no-permission-message: "已设置@全体成员但机器人没有群管理员权限，本次推送已自动转为普通消息发送。" # 留空 "" 则静默回退不发提示
+      at-all-limited-message: "今日@全体成员次数已达上限，本次推送已自动转为普通消息发送。" # 留空 "" 则静默回退不发提示
+      group-permission-cache-seconds: 30 # 群权限缓存秒数（WebSocket /all 收到升降管事件会立即刷新）
+      verify-group-receipt: true # 校验群回执 messageId，避免无权限/被吞消息误报成功
+      detect:
+        enable-http-detect: true # 是否启用 Mirai HTTP 与 Bot 绑定可用性检测
+        http-detect-interval: 300 # HTTP 服务可用性检测周期，单位：秒
+        http-alarm-mail-interval: 3600 # HTTP 告警邮件最短发送间隔，防止短时间刷屏，单位：秒
+        enable-message-detect: true # 是否启用消息接收检测（注意：安静的群长时间无人发言也会触发，可按需改为 false）
+        message-detect-interval: 1800 # 指定时间内未收到任何真实消息时发送告警邮件，单位：秒
+        message-alarm-mail-interval: 3600 # 消息接收告警邮件最短发送间隔，单位：秒
+  bilibili:
+    debug:
+      live-room-raw-message-log: true # 是否启用直播间消息调试日志
+      dynamic-raw-message-log: true # 是否启用动态推送接口调试日志
+      word-cloud-debug: false # 是否启用弹幕词云分词调试日志
+    network:
+      user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 # 自定义 User-Agent
+    live:
+      enable-connect-live-room: true # 是否启用直播间连接，若连接直播间已被风控，关闭此开关，仅使用备用直播推送
+      live-room-connect-interval: 10000 # 直播间连接间隔，连接过快可能会触发风控
+      complete-event: false # 是否自动补全事件信息
+      auto-detect-live-room-risk: false # 是否启用直播间数据风控检测
+      only-connect-necessary-rooms: true # 是否仅连接到启用了直播推送的直播间
+      backup-live-push: true # 是否启用备用直播推送
+      backup-live-push-interval: 10 # 备用直播推送检测时间间隔，单位：秒
+      auto-save-live-report-image: true # 是否自动保存直播报告图片
+    dynamic:
+      auto-follow: true # 是否自动关注开启了动态推送的 UP 主
+      auto-follow-interval: 30 # 自动关注的时间间隔，单位：秒
+      api-request-interval: 10 # 动态接口请求频率，单位：秒
+      draw-logo: true # 是否绘制 StarBot logo
+      auto-save-image: true # 是否自动保存动态图片
+  core:
+    log:
+      console: INFO
+      file: DEBUG
+      event-log: true
+      network-log: true
+    paint:
+      extra-copyrights: # 自定义底部版权信息，不需要可删除本块
+        - text: StarBot 3.0-beta10
+          size: 30
+          color: AAAA00
+          style: 2
+    mail:
+      default-to: "replace-with-your-receiver@qq.com" # 【必须修改】默认告警收件邮箱地址

@@ -177,6 +177,55 @@ class MiraiCommandHandlerTest {
         assertEquals(2, replies.size());
     }
 
+    @Test
+    void usesActiveBotQqSupplierForMentionsAndSelfFilterAfterSwitch() {
+        java.util.concurrent.atomic.AtomicLong activeQq = new java.util.concurrent.atomic.AtomicLong(888888888L);
+        MiraiCommandHandler dynamicHandler = new MiraiCommandHandler(properties, () -> users, message -> {
+            destinations.add(message.getNum());
+            replies.add(message.getContent());
+            types.add(message.getType());
+        }, clock, activeQq::get);
+
+        JSONObject selfFromNewBot = event("status");
+        selfFromNewBot.getJSONObject("sender").put("id", 888888888L);
+        assertFalse(dynamicHandler.handle(selfFromNewBot));
+
+        JSONObject mentionNewBot = event("status");
+        mentionNewBot.getJSONArray("messageChain").add(1, JSON.parseObject("{\"type\":\"At\",\"target\":888888888}"));
+        assertTrue(dynamicHandler.handle(mentionNewBot));
+        assertEquals(1, replies.size());
+    }
+
+    @Test
+    void enforcesGroupCommandPermissionAndAdminAllowlist() {
+        properties.setCommandPermission("admin");
+        // MEMBER blocked
+        assertFalse(handler.handle(event("status")));
+        // ADMINISTRATOR allowed
+        JSONObject adminMsg = event("status");
+        adminMsg.getJSONObject("sender").put("permission", "ADMINISTRATOR");
+        adminMsg.getJSONArray("messageChain").getJSONObject(0).put("id", 51);
+        assertTrue(handler.handle(adminMsg));
+        // adminQqs allowlist overrides MEMBER
+        properties.setAdminQqs(List.of(333333333L));
+        now = now.plusSeconds(5);
+        JSONObject allowlisted = event("status");
+        allowlisted.getJSONArray("messageChain").getJSONObject(0).put("id", 52);
+        assertTrue(handler.handle(allowlisted));
+        // owner mode blocks non-allowlisted ADMINISTRATOR
+        properties.setCommandPermission("owner");
+        properties.setAdminQqs(List.of());
+        now = now.plusSeconds(5);
+        JSONObject adminBlocked = event("status");
+        adminBlocked.getJSONObject("sender").put("permission", "ADMINISTRATOR");
+        adminBlocked.getJSONArray("messageChain").getJSONObject(0).put("id", 53);
+        assertFalse(handler.handle(adminBlocked));
+        JSONObject ownerAllowed = event("status");
+        ownerAllowed.getJSONObject("sender").put("permission", "OWNER");
+        ownerAllowed.getJSONArray("messageChain").getJSONObject(0).put("id", 54);
+        assertTrue(handler.handle(ownerAllowed));
+    }
+
     private JSONObject event(String text) {
         JSONObject message = JSON.parseObject("""
             {"type":"GroupMessage","sender":{"id":333333333,"memberName":"Example",

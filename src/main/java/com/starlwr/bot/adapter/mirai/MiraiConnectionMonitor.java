@@ -73,11 +73,11 @@ public class MiraiConnectionMonitor implements AutoCloseable {
             if (connectionFailed) log.info("Mirai HTTP 与 Bot 绑定检测已恢复");
             connectionFailed = false;
         } catch (Exception e) {
-            if (!connectionFailed) log.warn("Mirai HTTP 或 Bot 绑定检测失败（{}）", e.getClass().getSimpleName());
+            if (!connectionFailed) log.warn("Mirai HTTP 或 Bot 绑定检测失败：{}", MiraiApiClient.describeFailure(e));
             connectionFailed = true;
             if (due(lastHttpAlarm, properties.getDetect().getHttpAlarmMailInterval())) {
                 lastHttpAlarm = clock.instant();
-                notifyAlarm("StarBot Mirai 服务异常告警", "Mirai HTTP 或 Bot 绑定/资料接口检测失败，请检查 MCL 与 QQ 登录状态。");
+                notifyAlarm("StarBot Mirai 服务异常告警", "Mirai HTTP 或 Bot 绑定/资料接口检测失败，请检查 Mirai 与 QQ 登录状态。");
             }
         }
     }

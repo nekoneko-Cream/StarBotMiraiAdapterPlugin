@@ -47,6 +47,9 @@ class MiraiAdapterServiceTest {
     private MiraiController controller;
     private final List<Long> receivedAt = new CopyOnWriteArrayList<>();
     private final AtomicInteger sendCode = new AtomicInteger();
+    private final AtomicReference<String> sendMsg = new AtomicReference<>("test-result");
+    private final AtomicInteger sendMessageId = new AtomicInteger(123);
+    private final AtomicReference<String> groupListJson = new AtomicReference<>(null);
     private final AtomicReference<String> incoming = new AtomicReference<>("[]");
     private final List<String> bodies = new CopyOnWriteArrayList<>();
     private final AtomicInteger backendDelay = new AtomicInteger();
@@ -61,11 +64,14 @@ class MiraiAdapterServiceTest {
                 case "/verify" -> "{\"code\":0,\"session\":\"test-session\"}";
                 case "/bind", "/release" -> "{\"code\":0,\"msg\":\"success\"}";
                 case "/fetchMessage" -> "{\"code\":0,\"msg\":\"\",\"data\":" + incoming.getAndSet("[]") + "}";
+                case "/groupList" -> groupListJson.get() != null
+                    ? "{\"code\":0,\"data\":" + groupListJson.get() + "}"
+                    : "{\"code\":400,\"msg\":\"not configured\"}";
                 case "/sendGroupMessage", "/sendFriendMessage" -> {
                     receivedAt.add(System.nanoTime());
                     bodies.add(request);
                     try { Thread.sleep(backendDelay.get()); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                    yield "{\"code\":" + sendCode.get() + ",\"msg\":\"test-result\",\"messageId\":123}";
+                    yield "{\"code\":" + sendCode.get() + ",\"msg\":\"" + sendMsg.get() + "\",\"messageId\":" + sendMessageId.get() + "}";
                 }
                 default -> "{\"code\":400,\"msg\":\"unexpected path\"}";
             };
@@ -332,6 +338,182 @@ class MiraiAdapterServiceTest {
         assertEquals(2, receivedAt.size());
         assertTrue(TimeUnit.NANOSECONDS.toMillis(receivedAt.get(1) - receivedAt.get(0)) >= 280,
                 "messages must respect the configured 300 ms delay");
+    }
+
+    @Test
+    void controllerAllowsOmittedBotQqWhenAutoFollowEnabledAndRejectsWhenDisabled() {
+        MiraiAdapterProperties autoProps = new MiraiAdapterProperties();
+        autoProps.setBotQq(0L);
+        autoProps.setAutoFollowOnlineBot(true);
+        StarBotSenderService autoSenders = new StarBotSenderService(coreProperties);
+        WebServerApplicationContext ctx = mock(WebServerApplicationContext.class);
+        WebServer ws = mock(WebServer.class);
+        when(ctx.getWebServer()).thenReturn(ws);
+        when(ws.getPort()).thenReturn(bridgeServer.getAddress().getPort());
+        try (MiraiController autoController = new MiraiController(autoProps, service, autoSenders, ctx, coreProperties)) {
+            assertDoesNotThrow(autoController::onApplicationReady);
+            assertTrue(autoSenders.getSender("mirai").isPresent());
+        }
+
+        MiraiAdapterProperties strictProps = new MiraiAdapterProperties();
+        strictProps.setBotQq(0L);
+        strictProps.setAutoFollowOnlineBot(false);
+        StarBotSenderService strictSenders = new StarBotSenderService(coreProperties);
+        try (MiraiController strictController = new MiraiController(strictProps, service, strictSenders, ctx, coreProperties)) {
+            assertThrows(IllegalArgumentException.class, strictController::onApplicationReady);
+        }
+    }
+
+    @Test
+    void atAllFallsBackToNormalMessageAndSendsNoticeWhenBotIsMember() {
+        groupListJson.set("[{\"id\":987654321,\"name\":\"TestGroup\",\"permission\":\"MEMBER\"}]");
+        var resp = service.send("mirai", PushTargetType.GROUP.getCode(), 987654321L,
+            "{at=all}\n『测试主播』开播啦！{image_url=https://example.com/1.jpg}");
+        assertEquals(0, resp.getIntValue("code"));
+        assertEquals(2, bodies.size());
+
+        var firstChain = JSON.parseObject(bodies.get(0)).getJSONArray("messageChain");
+        assertEquals(2, firstChain.size());
+        assertEquals("Plain", firstChain.getJSONObject(0).getString("type"));
+        assertEquals("『测试主播』开播啦！", firstChain.getJSONObject(0).getString("text"));
+        assertEquals("Image", firstChain.getJSONObject(1).getString("type"));
+
+        var noticeChain = JSON.parseObject(bodies.get(1)).getJSONArray("messageChain");
+        assertEquals(1, noticeChain.size());
+        assertTrue(noticeChain.getJSONObject(0).getString("text").contains("没有群管理员权限"));
+    }
+
+    @Test
+    void standaloneAtAllMessageSkipsAtAllAndSendsNoticeWithoutFailing() {
+        groupListJson.set("[{\"id\":987654321,\"name\":\"TestGroup\",\"permission\":\"MEMBER\"}]");
+        var resp = service.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}");
+        assertEquals(0, resp.getIntValue("code"));
+        assertEquals(1, bodies.size());
+        var noticeChain = JSON.parseObject(bodies.get(0)).getJSONArray("messageChain");
+        assertEquals("Plain", noticeChain.getJSONObject(0).getString("type"));
+        assertTrue(noticeChain.getJSONObject(0).getString("text").contains("没有群管理员权限"));
+    }
+
+    @Test
+    void atAllSilentDropTriggersAutomaticFallbackResend() throws Exception {
+        AtomicInteger callCount = new AtomicInteger();
+        HttpServer dropServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> sent = new CopyOnWriteArrayList<>();
+        dropServer.createContext("/", exchange -> {
+            String req = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String path = exchange.getRequestURI().getPath();
+            String res = switch (path) {
+                case "/verify" -> "{\"code\":0,\"session\":\"s\"}";
+                case "/bind", "/release" -> "{\"code\":0,\"msg\":\"success\"}";
+                case "/groupList" -> "{\"code\":0,\"data\":[{\"id\":987654321,\"name\":\"G\",\"permission\":\"ADMINISTRATOR\"}]}";
+                case "/sendGroupMessage" -> {
+                    sent.add(req);
+                    int n = callCount.incrementAndGet();
+                    yield n == 1
+                        ? "{\"code\":0,\"msg\":\"success\",\"messageId\":-1}"
+                        : "{\"code\":0,\"msg\":\"success\",\"messageId\":" + (100 + n) + "}";
+                }
+                default -> "{\"code\":400,\"msg\":\"unexpected\"}";
+            };
+            byte[] b = res.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        dropServer.start();
+        try {
+            MiraiApiClient c = new MiraiApiClient("http://127.0.0.1:" + dropServer.getAddress().getPort(), new RestTemplate());
+            c.connect(123456789L, "k");
+            try (MiraiAdapterService svc = new MiraiAdapterService(properties, new MiraiMessageConverter(), c)) {
+                var resp = svc.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}\n开播啦！");
+                assertEquals(0, resp.getIntValue("code"));
+                assertEquals("102", resp.getString("id"));
+                assertEquals(3, sent.size());
+                assertEquals("AtAll", JSON.parseObject(sent.get(0)).getJSONArray("messageChain").getJSONObject(0).getString("type"));
+                assertEquals("Plain", JSON.parseObject(sent.get(1)).getJSONArray("messageChain").getJSONObject(0).getString("type"));
+                assertEquals("开播啦！", JSON.parseObject(sent.get(1)).getJSONArray("messageChain").getJSONObject(0).getString("text"));
+                assertTrue(JSON.parseObject(sent.get(2)).getJSONArray("messageChain").getJSONObject(0).getString("text").contains("普通消息"));
+            }
+        } finally {
+            dropServer.stop(0);
+        }
+    }
+
+    @Test
+    void atAllLimitedErrorFallsBackAndCachesDailyLimit() throws Exception {
+        AtomicInteger callCount = new AtomicInteger();
+        HttpServer limServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> sent = new CopyOnWriteArrayList<>();
+        limServer.createContext("/", exchange -> {
+            String req = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String path = exchange.getRequestURI().getPath();
+            String res = switch (path) {
+                case "/verify" -> "{\"code\":0,\"session\":\"s\"}";
+                case "/bind", "/release" -> "{\"code\":0,\"msg\":\"success\"}";
+                case "/groupList" -> "{\"code\":0,\"data\":[{\"id\":987654321,\"name\":\"G\",\"permission\":\"ADMINISTRATOR\"}]}";
+                case "/sendGroupMessage" -> {
+                    sent.add(req);
+                    int n = callCount.incrementAndGet();
+                    yield n == 1
+                        ? "{\"code\":500,\"msg\":\"SendMessageFailedException: AT_ALL_LIMITED\"}"
+                        : "{\"code\":0,\"msg\":\"success\",\"messageId\":" + (200 + n) + "}";
+                }
+                default -> "{\"code\":400,\"msg\":\"unexpected\"}";
+            };
+            byte[] b = res.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        limServer.start();
+        try {
+            MiraiApiClient c = new MiraiApiClient("http://127.0.0.1:" + limServer.getAddress().getPort(), new RestTemplate());
+            c.connect(123456789L, "k");
+            try (MiraiAdapterService svc = new MiraiAdapterService(properties, new MiraiMessageConverter(), c)) {
+                var first = svc.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}\n第一条开播");
+                assertEquals(0, first.getIntValue("code"));
+                assertEquals(3, sent.size());
+                assertTrue(JSON.parseObject(sent.get(2)).getJSONArray("messageChain").getJSONObject(0).getString("text").contains("次数已达上限"));
+
+                // Second push same day skips AtAll proactively (and notice is within 15s cooldown)
+                var second = svc.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}\n第二条开播");
+                assertEquals(0, second.getIntValue("code"));
+                assertEquals(4, sent.size());
+                assertEquals("Plain", JSON.parseObject(sent.get(3)).getJSONArray("messageChain").getJSONObject(0).getString("type"));
+                assertEquals("第二条开播", JSON.parseObject(sent.get(3)).getJSONArray("messageChain").getJSONObject(0).getString("text"));
+            }
+        } finally {
+            limServer.stop(0);
+        }
+    }
+
+    @Test
+    void unconfirmedNormalGroupMessageReturnsFailureWhenReceiptVerificationEnabled() {
+        sendMessageId.set(-1);
+        var resp = service.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "plain hello");
+        assertEquals(1, resp.getIntValue("code"));
+        assertTrue(resp.getString("message").contains("未收到服务端回执"));
+        sendMessageId.set(123);
+    }
+
+    @Test
+    void botPermissionChangeEventEnablesAtAllWithoutRestart() {
+        groupListJson.set("[{\"id\":987654321,\"name\":\"G\",\"permission\":\"MEMBER\"}]");
+        var first = service.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}\n无权限测试");
+        assertEquals(0, first.getIntValue("code"));
+        assertEquals("Plain", JSON.parseObject(bodies.get(0)).getJSONArray("messageChain").getJSONObject(0).getString("type"));
+
+        service.onBotGroupPermissionChanged(987654321L, "ADMINISTRATOR");
+        bodies.clear();
+        var second = service.send("mirai", PushTargetType.GROUP.getCode(), 987654321L, "{at=all}{at=all}\n提权后测试");
+        assertEquals(0, second.getIntValue("code"));
+        assertEquals(1, bodies.size());
+        var chain = JSON.parseObject(bodies.get(0)).getJSONArray("messageChain");
+        assertEquals(2, chain.size());
+        assertEquals("AtAll", chain.getJSONObject(0).getString("type"));
+        assertEquals("\n提权后测试", chain.getJSONObject(1).getString("text"));
     }
 
     private Message message() {

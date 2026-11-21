@@ -3,14 +3,15 @@ package com.starlwr.bot.adapter.mirai;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.starlwr.bot.core.enums.PushTargetType;
-import com.starlwr.bot.core.model.PushUser;
 import com.starlwr.bot.core.model.Message;
+import com.starlwr.bot.core.model.PushUser;
 import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /** Read-only commands scoped to enabled Mirai group subscriptions. */
@@ -19,15 +20,22 @@ public final class MiraiCommandHandler {
     private final Supplier<List<PushUser>> users;
     private final Consumer<Message> reply;
     private final Clock clock;
+    private final LongSupplier activeBotQq;
     private final Map<String, Boolean> seen = new LinkedHashMap<>();
     private final Map<Long, Long> lastReply = new LinkedHashMap<>();
 
     public MiraiCommandHandler(MiraiAdapterProperties properties, Supplier<List<PushUser>> users,
                                Consumer<Message> reply, Clock clock) {
+        this(properties, users, reply, clock, properties::getBotQq);
+    }
+
+    public MiraiCommandHandler(MiraiAdapterProperties properties, Supplier<List<PushUser>> users,
+                               Consumer<Message> reply, Clock clock, LongSupplier activeBotQq) {
         this.properties = properties;
         this.users = users;
         this.reply = reply;
         this.clock = clock;
+        this.activeBotQq = activeBotQq == null ? properties::getBotQq : activeBotQq;
     }
 
     public synchronized boolean handle(JSONObject event) {
@@ -39,9 +47,13 @@ public final class MiraiCommandHandler {
         JSONObject group = sender == null ? null : sender.getJSONObject("group");
         Long groupId = group == null ? null : group.getLong("id");
         Long senderId = sender == null ? null : sender.getLong("id");
+        long selfQq = currentBotQq();
         boolean groupMessage = "GroupMessage".equals(event.getString("type"));
         if ((groupMessage && groupId == null) || (!groupMessage && group != null)
-            || senderId == null || senderId == properties.getBotQq()) {
+            || senderId == null || (selfQq > 0 && senderId == selfQq)) {
+            return false;
+        }
+        if (!hasCommandPermission(groupMessage, senderId, sender.getString("permission"))) {
             return false;
         }
         boolean extended = "extended".equalsIgnoreCase(properties.getCommandMode());
@@ -72,7 +84,7 @@ public final class MiraiCommandHandler {
                 String plain = element.getString("text");
                 if (plain != null) text.append(plain);
             } else if ("At".equals(type)) {
-                if (!Long.valueOf(properties.getBotQq()).equals(element.getLong("target"))) return false;
+                if (selfQq <= 0 || !Long.valueOf(selfQq).equals(element.getLong("target"))) return false;
             } else if (!"Quote".equals(type)) {
                 return false;
             }
@@ -87,7 +99,7 @@ public final class MiraiCommandHandler {
             case "status", "状态" -> "StarBot 3\n连接：Mirai HTTP 已连接\n本群订阅：" + subscribed.size()
                 + " 位主播\n群消息指令：已启用";
             case "help", "帮助", "菜单" -> "StarBot 3 指令\nstatus / 状态：运行状态\nsubscriptions / 订阅 / 主播列表：本群订阅\nversion / 版本：版本信息\nhelp / 帮助：本菜单\n支持直接发送，或 @本机器人 后发送。";
-            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.1.0";
+            case "version", "版本" -> "StarBot 3 · MiraiAdapter 1.1.2";
             case "subscriptions", "订阅", "主播列表" -> subscriptions(subscribed);
             default -> null;
         };
@@ -105,6 +117,32 @@ public final class MiraiCommandHandler {
         Message.create(properties.getPlatform(), groupMessage ? PushTargetType.GROUP : PushTargetType.FRIEND,
             targetId, response).forEach(reply);
         return true;
+    }
+
+    private boolean hasCommandPermission(boolean groupMessage, long senderId, String senderPermission) {
+        String policy = properties.getCommandPermission();
+        if (policy == null || policy.isBlank() || "all".equalsIgnoreCase(policy.strip())) {
+            return true;
+        }
+        List<Long> admins = properties.getAdminQqs();
+        if (admins != null && admins.contains(senderId)) {
+            return true;
+        }
+        String normalizedPolicy = policy.strip().toLowerCase(Locale.ROOT);
+        if (!groupMessage) {
+            return false;
+        }
+        String perm = senderPermission == null ? "" : senderPermission.strip().toUpperCase(Locale.ROOT);
+        return switch (normalizedPolicy) {
+            case "owner" -> "OWNER".equals(perm);
+            case "admin", "administrator" -> "OWNER".equals(perm) || "ADMINISTRATOR".equals(perm);
+            default -> true;
+        };
+    }
+
+    private long currentBotQq() {
+        long active = activeBotQq.getAsLong();
+        return active > 0 ? active : properties.getBotQq();
     }
 
     private String subscriptions(List<PushUser> subscribed) {

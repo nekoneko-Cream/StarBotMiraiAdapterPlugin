@@ -1,0 +1,24 @@
+# 配套 MCL / Mirai Console 的 mirai-api-http 2.x 配置参考
+# 路径：Mirai根目录/config/net.mamoe.mirai-api-http/setting.yml
+# 同时开启 http 与 ws：StarBot 将优先使用 ws://localhost:7827/all 实时接收消息与群权限事件，
+# 断连时自动无感回退到 HTTP 轮询。
+
+adapters:
+  - http
+  - ws
+debug: false
+enableVerify: true
+verifyKey: "replace-with-your-mirai-verify-key" # 【必须修改】与 StarBot application.yml 中的 verify-key 完全一致
+singleMode: false
+cacheSize: 4096
+persistenceFactory: 'built-in'
+adapterSettings:
+  http:
+    host: localhost
+    port: 7827
+    cors: ["*"]
+    unreadQueueMaxSize: 100
+  ws:
+    host: localhost
+    port: 7827
+    reservedSyncId: -1
